@@ -59,6 +59,10 @@ func (e *ErrInvalidOperand) Error() string {
 	)
 }
 
+type BaseOperation struct {
+	config EvaluatorConfig
+}
+
 type Operation interface {
 	EQ(left Operand, right Operand) (bool, error)
 	NE(left Operand, right Operand) (bool, error)

@@ -13,9 +13,10 @@ type Evaluator struct {
 	tree antlr.ParseTree
 
 	testHookPanic func()
+	config        EvaluatorConfig
 }
 
-func NewEvaluator(rule string) (ret *Evaluator, retErr error) {
+func NewEvaluator(rule string, opts ...EvaluatorConfigOption) (ret *Evaluator, retErr error) {
 	// antlr lib has panics for exceptions so we have to put a recover here
 	// in the unlikely case there is an exception
 	defer func() {
@@ -24,6 +25,11 @@ func NewEvaluator(rule string) (ret *Evaluator, retErr error) {
 			retErr = fmt.Errorf("%q", info)
 		}
 	}()
+	config := EvaluatorConfig{}
+	for _, opt := range opts {
+		opt(&config)
+	}
+
 	input := antlr.NewInputStream(rule)
 	lex := NewJsonQueryLexer(input)
 	lex.RemoveErrorListeners()
@@ -34,8 +40,9 @@ func NewEvaluator(rule string) (ret *Evaluator, retErr error) {
 	tree := p.Query()
 
 	return &Evaluator{
-		rule: rule,
-		tree: tree,
+		rule:   rule,
+		tree:   tree,
+		config: config,
 	}, nil
 }
 
@@ -60,7 +67,7 @@ func (e *Evaluator) Process(items map[string]interface{}) (ret bool, retErr erro
 		}
 	}()
 
-	visitor := NewJsonQueryVisitorImpl(items)
+	visitor := NewJsonQueryVisitorImpl(items, e.config)
 	result := visitor.Visit(e.tree)
 	e.lastDebugErr = visitor.debugErr
 	if e.testHookPanic != nil {

@@ -1,6 +1,7 @@
 package parser
 
 type NullOperation struct {
+	BaseOperation
 }
 
 func (o *NullOperation) EQ(left Operand, right Operand) (bool, error) {

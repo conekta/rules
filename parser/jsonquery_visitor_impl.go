@@ -3,6 +3,7 @@ package parser
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -48,12 +49,14 @@ type JsonQueryVisitorImpl struct {
 
 	err      error
 	debugErr error
+	config   EvaluatorConfig
 }
 
-func NewJsonQueryVisitorImpl(item map[string]interface{}) *JsonQueryVisitorImpl {
+func NewJsonQueryVisitorImpl(item map[string]interface{}, config EvaluatorConfig) *JsonQueryVisitorImpl {
 	return &JsonQueryVisitorImpl{
-		stack: &objStack{},
-		item:  item,
+		stack:  &objStack{},
+		item:   item,
+		config: config,
 	}
 }
 
@@ -197,52 +200,9 @@ func (j *JsonQueryVisitorImpl) VisitMulSumExp(ctx *MulSumExpContext) interface{}
 		return false
 	}
 	defer func() { j.rightOp = nil }()
-
 	ret, err := apply(j.leftOp, j.rightOp)
 	if err != nil {
-		switch err {
-		case ErrInvalidOperation:
-			// in case of invalid operation lets rather
-			// be conservative and return false because the rule doesn't even make
-			// sense. It can be argued that it would be false positive if we were
-			// to return true
-			j.setErr(err)
-			j.setDebugErr(
-				newNestedError(err, "Not a valid operation for datatypes").Set(ErrVals{
-					"operation":           ctx.op.GetTokenType(),
-					"object_path_operand": j.leftOp,
-					"rule_operand":        j.rightOp,
-				}),
-			)
-		case ErrEvalOperandMissing:
-			j.setDebugErr(
-				newNestedError(err, "Eval operand missing in input object").Set(ErrVals{
-					"attr_path": ctx.ListAttrPaths().GetText(),
-				}),
-			)
-		default:
-			switch err.(type) {
-			case *ErrInvalidOperand:
-				j.setDebugErr(
-					newNestedError(err, "operands are not the right value type").Set(ErrVals{
-						"attr_path":           ctx.ListAttrPaths().GetText(),
-						"object_path_operand": j.leftOp,
-						"rule_operand":        j.rightOp,
-					}),
-				)
-			default:
-				j.setDebugErr(
-					newNestedError(err, "unknown error").Set(ErrVals{
-						"attr_path":           ctx.ListAttrPaths().GetText(),
-						"object_path_operand": j.leftOp,
-						"rule_operand":        j.rightOp,
-					}),
-				)
-
-			}
-		}
-
-		return false
+		j.handleApplyError(err, ctx.ListAttrPaths().GetText(), ctx.op.GetTokenType())
 	}
 	return ret
 }
@@ -255,16 +215,29 @@ func (j *JsonQueryVisitorImpl) VisitPresentExp(ctx *PresentExpContext) interface
 func (j *JsonQueryVisitorImpl) VisitCompareExpAttrPath(ctx *CompareExpAttrPathContext) interface{} {
 	ctx.AttrPath().Accept(j)
 	ctx.AttrPathValue().Accept(j)
+	if isNil(j.rightOp) {
+		j.setDebugErr(
+			newNestedError(ErrEvalOperandMissing, "Eval operand missing in input object").Set(ErrVals{
+				"attr_path": ctx.AttrPathValue().GetText(),
+			}),
+		)
+		return false
+	}
 	var currentOp Operation
-	switch j.leftOp.(type) {
+	switch j.rightOp.(type) {
 	case string:
-		currentOp = &StringOperation{}
+		currentOp = &StringOperation{BaseOperation: BaseOperation{config: j.config}}
 	case int, int32, int64:
-		currentOp = &IntOperation{}
+		currentOp = &IntOperation{BaseOperation: BaseOperation{config: j.config}}
 	case float32, float64:
-		currentOp = &FloatOperation{}
+		currentOp = &FloatOperation{BaseOperation: BaseOperation{config: j.config}}
 	default:
-		j.setErr(fmt.Errorf("invalid AttrPathValue"))
+		j.setDebugErr(
+			newNestedError(ErrInvalidOperation, "Eval operand invalid type").Set(ErrVals{
+				"attr_path": ctx.AttrPathValue().GetText(),
+			}),
+		)
+		return false
 	}
 	var apply func(Operand, Operand) (bool, error)
 	switch ctx.op.GetTokenType() {
@@ -295,7 +268,7 @@ func (j *JsonQueryVisitorImpl) VisitCompareExpAttrPath(ctx *CompareExpAttrPathCo
 	defer func() { j.rightOp = nil }()
 	ret, err := apply(j.leftOp, j.rightOp)
 	if err != nil {
-		j.setErr(err)
+		j.handleApplyError(err, ctx.AttrPath().GetText(), ctx.op.GetTokenType())
 	}
 	return ret
 }
@@ -336,49 +309,7 @@ func (j *JsonQueryVisitorImpl) VisitCompareExp(ctx *CompareExpContext) interface
 	defer func() { j.rightOp = nil }()
 	ret, err := apply(j.leftOp, j.rightOp)
 	if err != nil {
-		switch err {
-		case ErrInvalidOperation:
-			// in case of invalid operation lets rather
-			// be conservative and return false because the rule doesn't even make
-			// sense. It can be argued that it would be false positive if we were
-			// to return true
-			j.setErr(err)
-			j.setDebugErr(
-				newNestedError(err, "Not a valid operation for datatypes").Set(ErrVals{
-					"operation":           ctx.op.GetTokenType(),
-					"object_path_operand": j.leftOp,
-					"rule_operand":        j.rightOp,
-				}),
-			)
-		case ErrEvalOperandMissing:
-			j.setDebugErr(
-				newNestedError(err, "Eval operand missing in input object").Set(ErrVals{
-					"attr_path": ctx.AttrPath().GetText(),
-				}),
-			)
-		default:
-			switch err.(type) {
-			case *ErrInvalidOperand:
-				j.setDebugErr(
-					newNestedError(err, "operands are not the right value type").Set(ErrVals{
-						"attr_path":           ctx.AttrPath().GetText(),
-						"object_path_operand": j.leftOp,
-						"rule_operand":        j.rightOp,
-					}),
-				)
-			default:
-				j.setDebugErr(
-					newNestedError(err, "unknown error").Set(ErrVals{
-						"attr_path":           ctx.AttrPath().GetText(),
-						"object_path_operand": j.leftOp,
-						"rule_operand":        j.rightOp,
-					}),
-				)
-
-			}
-		}
-
-		return false
+		j.handleApplyError(err, ctx.AttrPath().GetText(), ctx.op.GetTokenType())
 	}
 	return ret
 }
@@ -437,7 +368,7 @@ func (j *JsonQueryVisitorImpl) VisitAttrPath(ctx *AttrPathContext) interface{} {
 		} else {
 			item = j.item
 		}
-		if item == nil {
+		if isNil(item) {
 			return nil
 		}
 		m := item.(map[string]interface{})
@@ -450,7 +381,8 @@ func (j *JsonQueryVisitorImpl) VisitAttrPath(ctx *AttrPathContext) interface{} {
 	} else {
 		item = j.item
 	}
-	if item == nil {
+	if isNil(item) {
+		j.stack.clear()
 		return nil
 	}
 	m := item.(map[string]interface{})
@@ -466,7 +398,7 @@ func (j *JsonQueryVisitorImpl) VisitAttrPathValue(ctx *AttrPathValueContext) int
 		} else {
 			item = j.item
 		}
-		if item == nil {
+		if isNil(item) {
 			return nil
 		}
 		m := item.(map[string]interface{})
@@ -479,7 +411,8 @@ func (j *JsonQueryVisitorImpl) VisitAttrPathValue(ctx *AttrPathValueContext) int
 	} else {
 		item = j.item
 	}
-	if item == nil {
+	if isNil(item) {
+		j.stack.clear()
 		return nil
 	}
 	m := item.(map[string]interface{})
@@ -496,7 +429,7 @@ func (j *JsonQueryVisitorImpl) VisitSubAttrValue(ctx *SubAttrValueContext) inter
 }
 
 func (j *JsonQueryVisitorImpl) VisitBoolean(ctx *BooleanContext) interface{} {
-	j.currentOperation = &BoolOperation{}
+	j.currentOperation = &BoolOperation{BaseOperation: BaseOperation{config: j.config}}
 
 	val, err := strconv.ParseBool(ctx.GetText())
 	if err != nil {
@@ -522,13 +455,13 @@ func getString(s string) string {
 }
 
 func (j *JsonQueryVisitorImpl) VisitString(ctx *StringContext) interface{} {
-	j.currentOperation = &StringOperation{}
+	j.currentOperation = &StringOperation{BaseOperation: BaseOperation{config: j.config}}
 	j.rightOp = getString(ctx.GetText())
 	return nil
 }
 
 func (j *JsonQueryVisitorImpl) VisitDouble(ctx *DoubleContext) interface{} {
-	j.currentOperation = &FloatOperation{}
+	j.currentOperation = &FloatOperation{BaseOperation: BaseOperation{config: j.config}}
 	val, err := strconv.ParseFloat(ctx.GetText(), 10)
 	if err != nil {
 		// TODO set err somewhere
@@ -540,13 +473,13 @@ func (j *JsonQueryVisitorImpl) VisitDouble(ctx *DoubleContext) interface{} {
 }
 
 func (j *JsonQueryVisitorImpl) VisitVersion(ctx *VersionContext) interface{} {
-	j.currentOperation = &VersionOperation{}
+	j.currentOperation = &VersionOperation{BaseOperation: BaseOperation{config: j.config}}
 	j.rightOp = ctx.VERSION().GetText()
 	return nil
 }
 
 func (j *JsonQueryVisitorImpl) VisitLong(ctx *LongContext) interface{} {
-	j.currentOperation = &IntOperation{}
+	j.currentOperation = &IntOperation{BaseOperation: BaseOperation{config: j.config}}
 	val, err := strconv.ParseInt(ctx.GetText(), 10, 64)
 	if err != nil {
 		j.rightOp = nil
@@ -558,7 +491,7 @@ func (j *JsonQueryVisitorImpl) VisitLong(ctx *LongContext) interface{} {
 }
 
 func (j *JsonQueryVisitorImpl) VisitListOfInts(ctx *ListOfIntsContext) interface{} {
-	j.currentOperation = &IntOperation{}
+	j.currentOperation = &IntOperation{BaseOperation: BaseOperation{config: j.config}}
 	return ctx.ListInts().Accept(j)
 }
 
@@ -584,7 +517,7 @@ func (j *JsonQueryVisitorImpl) VisitSubListOfInts(ctx *SubListOfIntsContext) int
 }
 
 func (j *JsonQueryVisitorImpl) VisitListOfDoubles(ctx *ListOfDoublesContext) interface{} {
-	j.currentOperation = &FloatOperation{}
+	j.currentOperation = &FloatOperation{BaseOperation: BaseOperation{config: j.config}}
 	return ctx.ListDoubles().Accept(j)
 }
 
@@ -610,7 +543,7 @@ func (j *JsonQueryVisitorImpl) VisitSubListOfDoubles(ctx *SubListOfDoublesContex
 }
 
 func (j *JsonQueryVisitorImpl) VisitListOfStrings(ctx *ListOfStringsContext) interface{} {
-	j.currentOperation = &StringOperation{}
+	j.currentOperation = &StringOperation{BaseOperation: BaseOperation{config: j.config}}
 	return ctx.ListStrings().Accept(j)
 }
 
@@ -629,4 +562,58 @@ func (j *JsonQueryVisitorImpl) VisitSubListOfStrings(ctx *SubListOfStringsContex
 		return nil
 	}
 	return ctx.SubListOfStrings().Accept(j)
+}
+
+func (j *JsonQueryVisitorImpl) handleApplyError(err error, attrPath string, tokenType int) {
+	switch {
+	case errors.Is(err, ErrInvalidOperation):
+		// in case of invalid operation lets rather
+		// be conservative and return false because the rule doesn't even make
+		// sense. It can be argued that it would be false positive if we were
+		// to return true
+		j.setErr(err)
+		j.setDebugErr(
+			newNestedError(err, "Not a valid operation for datatypes").Set(ErrVals{
+				"operation":           tokenType,
+				"object_path_operand": j.leftOp,
+				"rule_operand":        j.rightOp,
+			}),
+		)
+	case errors.Is(err, ErrEvalOperandMissing):
+		j.setDebugErr(
+			newNestedError(err, "Eval operand missing in input object").Set(ErrVals{
+				"attr_path": attrPath,
+			}),
+		)
+	default:
+		var errInvalidOperand *ErrInvalidOperand
+		switch {
+		case errors.As(err, &errInvalidOperand):
+			j.setDebugErr(
+				newNestedError(err, "operands are not the right value type").Set(ErrVals{
+					"attr_path":           attrPath,
+					"object_path_operand": j.leftOp,
+					"rule_operand":        j.rightOp,
+				}),
+			)
+		default:
+			j.setDebugErr(
+				newNestedError(err, "unknown error").Set(ErrVals{
+					"attr_path":           attrPath,
+					"object_path_operand": j.leftOp,
+					"rule_operand":        j.rightOp,
+				}),
+			)
+		}
+	}
+}
+
+func isNil(item interface{}) bool {
+	if item == nil {
+		return true
+	}
+	if reflect.ValueOf(item).Kind() == reflect.Ptr {
+		return reflect.ValueOf(item).IsNil()
+	}
+	return false
 }

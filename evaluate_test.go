@@ -1,9 +1,12 @@
 package rules
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/conekta/Conekta-Golang-Rules-Engine/parser"
 )
 
 func TestEvaluateAttrPathValue(t *testing.T) {
@@ -19,6 +22,23 @@ func TestEvaluateAttrPathValue(t *testing.T) {
 	require.True(t, res)
 }
 
+func TestEvaluateAttrPathValueNil(t *testing.T) {
+	res, err := Evaluate(`x.c.d > x.c.e`, map[string]interface{}{
+		"x": map[string]interface{}{
+			"c": map[string]interface{}{
+				"d": (*int)(nil),
+				"e": 1,
+			},
+		},
+	})
+	var nestedError *parser.NestedError
+	if errors.As(err, &nestedError) &&
+		!errors.Is(nestedError.Err, parser.ErrEvalOperandMissing) {
+		require.NoError(t, err)
+	}
+	require.False(t, res)
+}
+
 func TestEvaluateBasic(t *testing.T) {
 	res, err := Evaluate(`x.c.d eq "abc"`, map[string]interface{}{
 		"x": map[string]interface{}{
@@ -29,7 +49,67 @@ func TestEvaluateBasic(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, res)
+}
 
+func TestEvaluateMissingField(t *testing.T) {
+	res, err := Evaluate(`x.c.e eq "abc"`, map[string]interface{}{
+		"x": map[string]interface{}{
+			"c": map[string]interface{}{
+				"d": "abc",
+			},
+		},
+	})
+	var nestedError *parser.NestedError
+	if errors.As(err, &nestedError) &&
+		!errors.Is(nestedError.Err, parser.ErrEvalOperandMissing) {
+		require.NoError(t, err)
+	}
+	require.False(t, res)
+}
+
+func TestEvaluateMissingFieldWithNilToZeroValue(t *testing.T) {
+	res, err := Evaluate(`x.c.e eq ""`, map[string]interface{}{
+		"x": map[string]interface{}{
+			"c": map[string]interface{}{
+				"d": "abc",
+			},
+		},
+	}, parser.WithNilToZeroValue())
+	var nestedError *parser.NestedError
+	if errors.As(err, &nestedError) &&
+		!errors.Is(nestedError.Err, parser.ErrEvalOperandMissing) {
+		require.NoError(t, err)
+	}
+	require.True(t, res)
+}
+
+func TestEvaluateMissingFieldEqEmpty(t *testing.T) {
+	res, err := Evaluate(`x.c.e eq ""`, map[string]interface{}{
+		"x": map[string]interface{}{
+			"c": map[string]interface{}{
+				"d": "abc",
+			},
+		},
+	})
+	var nestedError *parser.NestedError
+	if errors.As(err, &nestedError) &&
+		!errors.Is(nestedError.Err, parser.ErrEvalOperandMissing) {
+		require.NoError(t, err)
+	}
+	require.False(t, res)
+}
+
+func TestEvaluateNilField(t *testing.T) {
+	res, err := Evaluate(`x.c.e eq "abc"`, map[string]interface{}{
+		"x": (*int)(nil),
+		"e": nil,
+	})
+	var nestedError *parser.NestedError
+	if errors.As(err, &nestedError) &&
+		!errors.Is(nestedError.Err, parser.ErrEvalOperandMissing) {
+		require.NoError(t, err)
+	}
+	require.False(t, res)
 }
 
 func TestSum(t *testing.T) {

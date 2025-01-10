@@ -1,12 +1,17 @@
 package parser
 
 type IntOperation struct {
+	BaseOperation
 	NullOperation
 }
 
 func (o *IntOperation) get(left Operand, right Operand) (int, int, error) {
-	if left == nil {
-		return 0, 0, ErrEvalOperandMissing
+	if isNil(left) {
+		if o.config.NilToZeroValue {
+			left = 0
+		} else {
+			return 0, 0, ErrEvalOperandMissing
+		}
 	}
 	leftVal, err := toInt(left)
 	if err != nil {

@@ -1,12 +1,17 @@
 package parser
 
 type FloatOperation struct {
+	BaseOperation
 	NullOperation
 }
 
 func (o *FloatOperation) get(left Operand, right Operand) (float64, float64, error) {
-	if left == nil {
-		return 0, 0, ErrEvalOperandMissing
+	if isNil(left) {
+		if o.config.NilToZeroValue {
+			left = 0
+		} else {
+			return 0, 0, ErrEvalOperandMissing
+		}
 	}
 	leftVal, err := toFloat(left)
 	if err != nil {
